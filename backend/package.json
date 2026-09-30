@@ -15,13 +15,15 @@
     "migrate": "node scripts/migrate.js",
     "invariants": "node scripts/invariants.js",
     "loadtest": "node scripts/loadtest.js",
-    "test": "node --test --test-concurrency=1 \"test/*.test.js\""
+    "loadtest:mixed": "node scripts/mixed-loadtest.mjs",
+    "test": "node --test --test-concurrency=1 \"../tests/*.test.js\""
   },
   "dependencies": {
     "cors": "^2.8.6",
     "decimal.js": "^10.6.0",
     "dotenv": "^18.0.1",
     "express": "^5.2.1",
+    "morgan": "^1.12.1",
     "pg": "^8.23.0",
     "zod": "^4.6.5"
   }

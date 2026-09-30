@@ -1,5 +1,5 @@
 // Error model. `code` is stable and machine-readable (it reuses the error_code enum from
-// data/enums.json where one fits); `message` is localised (en / hi).
+// data-model/enums.json where one fits); `message` is localised (en / hi).
 
 const CATALOGUE = {
   validation_error: {
@@ -11,6 +11,16 @@ const CATALOGUE = {
     status: 404,
     en: 'The requested record does not exist.',
     hi: 'अनुरोधित रिकॉर्ड नहीं मिला।',
+  },
+  login_required: {
+    status: 401,
+    en: 'Please sign in to continue.',
+    hi: 'जारी रखने के लिए कृपया साइन इन करें।',
+  },
+  invalid_session: {
+    status: 401,
+    en: 'Your session is not valid. Please sign in again.',
+    hi: 'आपका सत्र मान्य नहीं है। कृपया फिर से साइन इन करें।',
   },
   forbidden: {
     status: 403,

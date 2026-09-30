@@ -71,6 +71,7 @@ export const hotelQuery = z.object({
   breakfast: bool.optional(),
   refundable: bool.optional(),
   currency: currency.optional(),
+  include_sold_out: bool.optional(), // hotel page: list fully booked room types too (available_units 0)
   budget_currency: currency.optional(), // currency max_price is expressed in (default: display currency)
   sort: z.enum(['price', 'rating', 'score']).optional(),
   limit: int(1, 50, 20),
@@ -85,11 +86,14 @@ export const flightQuery = z.object({
   max_price: z.coerce.number().positive().optional(),
   currency: currency.optional(),
   limit: int(1, 50, 20),
+  connections: bool.optional(), // one-stop itineraries alongside direct flights (included unless false)
+  connections_limit: int(1, 30, 10),
 });
 
 export const aiSearchBody = z.object({
   query: z.string().min(3).max(500),
   currency: currency.optional(),
+  kind: z.enum(['hotels', 'flights']).default('hotels'),
 });
 
 export const loadTestBody = z.object({

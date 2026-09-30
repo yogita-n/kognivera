@@ -1,52 +1,62 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { api } from './api.js';
+import { useSession } from './session.jsx';
 
-// App-wide state: server-provided config, chosen currency, hash routing and toasts.
+// App-wide state: server-provided config for the signed-in user, chosen currency and toasts. Routing lives in
+// router.jsx, identity in session.jsx.
 const AppCtx = createContext(null);
-const ROUTES = ['search', 'trip', 'bookings', 'loadtest'];
-const parseHash = () => {
-  const r = window.location.hash.replace(/^#\/?/, '').split(/[/?]/)[0];
-  return ROUTES.includes(r) ? r : 'search';
+
+const CURRENCY_KEY = 'kognivera.currency';
+const readCurrency = () => {
+  try {
+    return sessionStorage.getItem(CURRENCY_KEY);
+  } catch {
+    return null;
+  }
 };
 
 export function AppProvider({ children }) {
+  const { session, signOut } = useSession();
+  const userId = session?.user_id ?? null;
   const [meta, setMeta] = useState(null);
   const [currencies, setCurrencies] = useState([]);
   const [bootError, setBootError] = useState(null);
-  const [currency, setCurrencyState] = useState(() => {
-    try {
-      return localStorage.getItem('kognivera.currency');
-    } catch {
-      return null;
-    }
-  });
-  const [route, setRoute] = useState(parseHash);
+  const [currency, setCurrencyState] = useState(readCurrency);
   const [toasts, setToasts] = useState([]);
 
+  // Everything is per user: on sign-in/out the config is reloaded and a manual currency choice is dropped,
+  // so each user starts in their own home currency.
   useEffect(() => {
-    const onHash = () => setRoute(parseHash());
-    window.addEventListener('hashchange', onHash);
-    return () => window.removeEventListener('hashchange', onHash);
-  }, []);
-
-  useEffect(() => {
+    setMeta(null);
+    setBootError(null);
+    setCurrencyState(null);
+    try {
+      sessionStorage.removeItem(CURRENCY_KEY);
+    } catch {
+      /* ignore */
+    }
+    if (!userId) return undefined;
+    let live = true;
     Promise.all([api.meta(), api.currencies()])
       .then(([m, c]) => {
+        if (!live) return;
         setMeta(m);
         setCurrencies(c.currencies);
       })
-      .catch((e) => setBootError(e));
-  }, []);
-
-  const navigate = useCallback((r) => {
-    window.location.hash = `/${r}`;
-    window.scrollTo({ top: 0 });
-  }, []);
+      .catch((e) => {
+        if (!live) return;
+        if (e.code === 'invalid_session') signOut(); // the stored user no longer exists: back to the login screen
+        else setBootError(e);
+      });
+    return () => {
+      live = false;
+    };
+  }, [userId, signOut]);
 
   const setCurrency = useCallback((c) => {
     setCurrencyState(c);
     try {
-      localStorage.setItem('kognivera.currency', c);
+      sessionStorage.setItem(CURRENCY_KEY, c);
     } catch {
       /* ignore */
     }
@@ -63,15 +73,13 @@ export function AppProvider({ children }) {
       meta,
       currencies,
       bootError,
-      currency: currency ?? meta?.user?.home_currency ?? 'INR',
+      currency: currency ?? session?.home_currency ?? meta?.user?.home_currency ?? 'INR',
       setCurrency,
-      route,
-      navigate,
       toast,
       toasts,
       dismissToast: (id) => setToasts((t) => t.filter((x) => x.id !== id)),
     }),
-    [meta, currencies, bootError, currency, setCurrency, route, navigate, toast, toasts],
+    [meta, currencies, bootError, currency, session?.home_currency, setCurrency, toast, toasts],
   );
   return <AppCtx.Provider value={value}>{children}</AppCtx.Provider>;
 }

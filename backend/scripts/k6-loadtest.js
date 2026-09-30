@@ -8,13 +8,19 @@
 // Run:      k6 run scripts/k6-loadtest.js
 //           k6 run -e BASE_URL=https://your-tunnel-or-deploy -e VUS=500 scripts/k6-loadtest.js
 //           k6 run -e VUS=500 -e BYPASS_SHIELD=false scripts/k6-loadtest.js   (production path)
+//           Graph of the race (live at http://127.0.0.1:5665 while running, plus an HTML file):
+//             K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_EXPORT=race-report.html k6 run -e VUS=500 -e RAMP_SECONDS=10 scripts/k6-loadtest.js
 import http from 'k6/http';
 import { check } from 'k6';
+import exec from 'k6/execution';
 import { Counter, Trend } from 'k6/metrics';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:3000';
 const INVENTORY_ID = __ENV.INVENTORY_ID || '';
 const VUS = Number(__ENV.VUS || 200);
+// Every request is sent as a different user (X-User-Id) so the server sees many travellers, not one. Set
+// SINGLE_USER=true to send no header (the demo-user fallback) and get the old behaviour.
+const SINGLE_USER = (__ENV.SINGLE_USER ?? 'false') === 'true';
 const BYPASS_SHIELD = (__ENV.BYPASS_SHIELD ?? 'true') !== 'false';
 const TAG = `k6-${Date.now()}`;
 
@@ -24,14 +30,23 @@ const otherError = new Counter('holds_other_error');
 const networkError = new Counter('holds_network_error'); // never reached the server (see default())
 const holdLatency = new Trend('hold_latency_ms', true);
 
+// RAMP_SECONDS=0 (default): all VUS fire in one instant (sharpest race, too short for a k6 graph).
+// RAMP_SECONDS>0: the same VUS requests are spread evenly over that many seconds, so the k6 web
+// dashboard / HTML report has enough data to plot, and the OS accept queue isn't hit by one burst.
+const RAMP_SECONDS = Number(__ENV.RAMP_SECONDS || 0);
+
 export const options = {
   scenarios: {
-    race: {
-      executor: 'per-vu-iterations',
-      vus: VUS,
-      iterations: 1,
-      maxDuration: '60s',
-    },
+    race: RAMP_SECONDS > 0
+      ? {
+          executor: 'constant-arrival-rate',
+          rate: VUS,
+          timeUnit: `${RAMP_SECONDS}s`,
+          duration: `${RAMP_SECONDS}s`,
+          preAllocatedVUs: Math.min(VUS, 200),
+          maxVUs: VUS,
+        }
+      : { executor: 'per-vu-iterations', vus: VUS, iterations: 1, maxDuration: '60s' },
   },
   // Not a pass/fail gate on its own — the real one is the invariant check() in teardown().
   thresholds: { holds_other_error: ['count==0'] },
@@ -44,18 +59,33 @@ export function setup() {
     inventoryId = res.json('inventory.0.inventory_id');
     if (!inventoryId) throw new Error('no contended inventory row found — is the backend seeded?');
   }
+  // Dictionary { request number -> user id }: request i is sent as userByRequest[i], cycling through the
+  // active users if there are fewer users than requests.
+  const userByRequest = {};
+  if (!SINGLE_USER) {
+    const ids = http.get(`${BASE_URL}/api/users/ids?limit=${Math.max(VUS, 1)}`).json('user_ids') || [];
+    if (!ids.length) throw new Error('no active users returned by /api/users/ids — is the backend seeded?');
+    const n = Math.max(VUS, ids.length);
+    for (let i = 0; i < n; i++) userByRequest[i] = ids[i % ids.length];
+    console.log(`user map: ${Object.keys(userByRequest).length} request slots -> ${new Set(Object.values(userByRequest)).size} distinct users`);
+  }
   const before = http.get(`${BASE_URL}/api/inventory/${inventoryId}`).json();
   const initialFree = before.total_units - before.booked_units - before.held_units;
   console.log(`\ntarget: ${inventoryId}  (${before.total_units} total, ${initialFree} free right now)`);
   console.log(`racing ${VUS} virtual users, mode: ${BYPASS_SHIELD ? 'shield bypassed (raw row lock)' : 'shield enabled (production path)'}\n`);
-  return { inventoryId, initialFree, beforeHeld: before.held_units, beforeBooked: before.booked_units };
+  return { userByRequest, inventoryId, initialFree, beforeHeld: before.held_units, beforeBooked: before.booked_units };
 }
 
 export default function (data) {
   // 8-char idempotency-key floor (backend/src/validation.js) — pad regardless of __VU width.
-  const key = `${TAG}-${String(__VU).padStart(6, '0')}`;
+  // A VU can run several iterations in ramp mode, so the key needs __ITER too or retries would collide.
+  const key = `${TAG}-${String(__VU).padStart(5, '0')}-${String(__ITER).padStart(4, '0')}`;
   const headers = { 'Content-Type': 'application/json', 'Idempotency-Key': key };
   if (BYPASS_SHIELD) headers['X-Bypass-Shield'] = '1';
+  // scenario.iterationInTest is unique per request across all VUs (unlike __VU, which repeats in ramp mode).
+  const slot = exec.scenario.iterationInTest;
+  const userId = data.userByRequest[slot % Math.max(Object.keys(data.userByRequest).length, 1)];
+  if (userId) headers['X-User-Id'] = userId;
 
   const res = http.post(
     `${BASE_URL}/api/holds`,
